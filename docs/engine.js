@@ -1,7 +1,7 @@
 // Crunching engine: pure functions, no DOM.
 // Currency = integer $k. Percentages = decimals. See CLAUDE.md section 3.
 
-export const ENGINE_VERSION = '1.0.0';
+export const ENGINE_VERSION = '1.1.0';
 
 // ---------------------------------------------------------------- PRNG
 export function mulberry32(seed) {
@@ -41,7 +41,7 @@ export function fmtUSD(v) {
   return d < 0 ? `(${s})` : s;
 }
 export const fmtPct = (d) => (d == null ? '—' : `${(d * 100).toFixed(1)}%`);
-export const fmtSignedPct = (d) => (d == null ? '' : `${d >= 0 ? '+' : '−'}${Math.abs(d * 100).toFixed(1)}%`);
+export const fmtSignedPct = (d) => { if (d == null) return ''; const v = Math.abs(d * 100).toFixed(1); return v === '0.0' ? '0.0%' : `${d >= 0 ? '+' : '−'}${v}%`; };
 export const fmtBps = (b) => { const r = Math.round(b); return `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r)} bps`; };
 export const fmtMonths = (m) => (m == null ? 'CF+' : m.toFixed(1));
 export function trimNum(x, d = 2) { return String(parseFloat(x.toFixed(d))); }
@@ -64,16 +64,20 @@ export function fmtAnswer(v, unit) {
 }
 
 // ---------------------------------------------------------------- archetypes
+// Ranges tuned so the realism tests pass (see CLAUDE.md section 3 for what changed and why).
 export const ARCHETYPES = {
-  B2B: { startARR: [10000, 80000], newRate: [0.05, 0.12], expRate: [0.02, 0.05], churnRate: [0.01, 0.03],
-    hostPct: [0.10, 0.16], supPct: [0.05, 0.09], rdPct: [0.25, 0.40], gaPct: [0.12, 0.20],
-    prepaid: [0.50, 0.80], payback: [14, 24] },
-  B2C: { startARR: [8000, 60000], newRate: [0.06, 0.14], expRate: [0.005, 0.02], churnRate: [0.04, 0.08],
-    hostPct: [0.12, 0.20], supPct: [0.03, 0.06], rdPct: [0.20, 0.32], gaPct: [0.10, 0.16],
-    prepaid: [0.20, 0.50], payback: [8, 16] },
+  B2B: { startARR: [10000, 80000], newRate: [0.04, 0.09], expRate: [0.02, 0.05], churnRate: [0.01, 0.03],
+    hostPct: [0.10, 0.16], supPct: [0.05, 0.09], rdPct: [0.28, 0.40], gaPct: [0.14, 0.20],
+    prepaid: [0.45, 0.70], smPct: [0.35, 0.50] },
+  B2C: { startARR: [8000, 60000], newRate: [0.06, 0.11], expRate: [0.005, 0.02], churnRate: [0.02, 0.035],
+    hostPct: [0.12, 0.20], supPct: [0.03, 0.06], rdPct: [0.25, 0.32], gaPct: [0.12, 0.16],
+    prepaid: [0.20, 0.40], smPct: [0.32, 0.46] },
 };
+// Relative quarterly drift. Prepaid share drifts less: a swing re-bills the whole ARR base and creates fake cash spikes.
+export const DRIFT_REL = { prepaid: 0.03 };
+const DRIFT = (k) => DRIFT_REL[k] ?? 0.10;
 export const ARCHETYPE_LABEL = { B2B: 'B2B SaaS', B2C: 'B2C SaaS' };
-export const DRIVER_KEYS = ['newRate', 'expRate', 'churnRate', 'hostPct', 'supPct', 'rdPct', 'gaPct', 'prepaid', 'payback'];
+export const DRIVER_KEYS = ['newRate', 'expRate', 'churnRate', 'hostPct', 'supPct', 'rdPct', 'gaPct', 'prepaid', 'smPct'];
 
 // ---------------------------------------------------------------- table rows
 // dir: +1 revenue-like (higher is good), -1 cost-like.
@@ -135,7 +139,7 @@ function buildFlows(open, drv, smOverride) {
   const support = Math.round(revenue * drv.supPct);
   const grossProfit = revenue - hosting - support;
   const gmPct = grossProfit / revenue;
-  const sm = smOverride != null ? smOverride : Math.round((newARR + expARR) * gmPct * drv.payback / 12);
+  const sm = smOverride != null ? smOverride : Math.round(revenue * drv.smPct);
   const rd = Math.round(revenue * drv.rdPct);
   const ga = Math.round(revenue * drv.gaPct);
   const totalOpex = sm + rd + ga;
@@ -144,8 +148,13 @@ function buildFlows(open, drv, smOverride) {
   const dDR = dr - open.dr;
   const billings = revenue + dDR;
   const fcf = opIncome + dDR;
-  return { drivers: { ...drv }, begARR, newARR, expARR, churnARR, endARR, revenue, hosting, support, grossProfit, gmPct,
+  return { drivers: { ...drv }, smOverride: smOverride != null, begARR, newARR, expARR, churnARR, endARR, revenue, hosting, support, grossProfit, gmPct,
     sm, rd, ga, totalOpex, opIncome, dr, dDR, billings, fcf };
+}
+
+// Share of ending ARR billed this quarter: annual renewals (25% of beginning ARR) + new + expansion.
+export function billingCohortWeight(Q) {
+  return Math.min(1, (0.25 * Q.begARR + Q.newARR + Q.expARR) / Q.endARR);
 }
 
 // hist = quarters before this one (index aligned), Q = this quarter at index idx
@@ -184,70 +193,85 @@ export function generateCompany(seed, archetype) {
   const P = ARCHETYPES[archetype];
   if (!P) throw new Error(`Unknown archetype ${archetype}`);
   const r = mulberry32(seed);
-  const base = {};
-  for (const k of DRIVER_KEYS) base[k] = uni(r, P[k][0], P[k][1]);
   const startARR = Math.round(uni(r, P.startARR[0], P.startARR[1]));
   const targetRunway = uni(r, 15, 36);
   const curQ = 1 + Math.floor(r() * 4);
   const curFY = 25 + Math.floor(r() * 2);
-
-  const drivers = [];
-  for (let q = 0; q < 8; q++) {
-    const d = {};
-    for (const k of DRIVER_KEYS) d[k] = base[k] * (1 + uni(r, -0.1, 0.1));
-    drivers.push(d);
-  }
-  const plan = drivers[7];
-  const act = {};
-  for (const k of DRIVER_KEYS) act[k] = plan[k] * (1 + (r() < 0.5 ? -1 : 1) * uni(r, 0.01, 0.03));
-
-  // anomalies
-  const n = r() < 0.5 ? 1 : 2;
-  const ids = [pick(r, ANOMALY_IDS)];
-  if (n === 2) {
-    const ok = ANOMALY_IDS.filter((id) => id !== ids[0] && !linesOverlap(id, ids[0]));
-    ids.push(pick(r, ok));
-  }
-  const mag = {};
-  let smUplift = null;
-  // hiring_pull_forward: other opex drivers' noise may not offset the R&D overage (opex and burn must be hit)
-  if (ids.includes('hiring_pull_forward')) {
-    for (const k of ['gaPct', 'payback', 'newRate', 'expRate']) act[k] = plan[k] * (1 + Math.abs(act[k] / plan[k] - 1));
-  }
-  for (const id of ids) {
-    if (id === 'hosting_outgrowth') { mag[id] = uni(r, 0.15, 0.35); act.hostPct = plan.hostPct * (1 + mag[id]); }
-    if (id === 'paid_search_inflation') { mag[id] = uni(r, 0.15, 0.30); act.newRate = plan.newRate * (1 - mag[id]); smUplift = uni(r, 0, 0.05); }
-    if (id === 'billing_shift') {
-      const drop = Math.min(uni(r, 0.10, 0.25), plan.prepaid - 0.05);
-      mag[id] = drop; act.prepaid = plan.prepaid - drop;
+  // Rejection loop (deterministic): redraw drivers/anomalies until the starting-runway target is feasible
+  // without cash going below 3 months of burn in any quarter. See CLAUDE.md "Starting cash".
+  let base, drivers, plan, act, n, ids, mag, smUplift, billingDrop, opening, quarters, prev, budget, smOv, actual;
+  let budgetBurn, refBurn, targetEnd, cumBefore7, openCash, floor, minEnd;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    base = {};
+    for (const k of DRIVER_KEYS) base[k] = uni(r, P[k][0], P[k][1]);
+    drivers = [];
+    for (let q = 0; q < 8; q++) {
+      const d = {};
+      for (const k of DRIVER_KEYS) d[k] = base[k] * (1 + uni(r, -DRIFT(k), DRIFT(k)));
+      drivers.push(d);
     }
-    if (id === 'churn_spike') { mag[id] = uni(r, 0.5, 1.0); act.churnRate = plan.churnRate * (1 + mag[id]); }
-    if (id === 'hiring_pull_forward') { mag[id] = uni(r, 0.10, 0.20); act.rdPct = plan.rdPct * (1 + mag[id]); }
+    plan = drivers[7];
+    act = {};
+    for (const k of DRIVER_KEYS) act[k] = plan[k] * (1 + (r() < 0.5 ? -1 : 1) * uni(r, 0.01, 0.03));
+
+    // anomalies
+    n = r() < 0.5 ? 1 : 2;
+    ids = [pick(r, ANOMALY_IDS)];
+    if (n === 2) {
+      const ok = ANOMALY_IDS.filter((id) => id !== ids[0] && !linesOverlap(id, ids[0]));
+      ids.push(pick(r, ok));
+    }
+    mag = {};
+    smUplift = null;
+    billingDrop = null;
+    // hiring_pull_forward: other opex drivers' noise may not offset the R&D overage (opex and burn must be hit)
+    if (ids.includes('hiring_pull_forward')) {
+      for (const k of ['gaPct', 'smPct']) act[k] = plan[k] * (1 + Math.abs(act[k] / plan[k] - 1));
+    }
+    for (const id of ids) {
+      if (id === 'hosting_outgrowth') { mag[id] = uni(r, 0.15, 0.35); act.hostPct = plan.hostPct * (1 + mag[id]); }
+      if (id === 'paid_search_inflation') { mag[id] = uni(r, 0.15, 0.30); act.newRate = plan.newRate * (1 - mag[id]); smUplift = uni(r, 0.05, 0.15); }
+      if (id === 'billing_shift') {
+        // drop applies to the cohort billed this quarter (renewals + new + expansion), see CLAUDE.md
+        billingDrop = Math.min(uni(r, 0.10, 0.25), plan.prepaid - 0.05);
+        mag[id] = billingDrop;
+      }
+      if (id === 'churn_spike') { mag[id] = uni(r, 0.5, 1.0); act.churnRate = plan.churnRate * (1 + mag[id]); }
+      if (id === 'hiring_pull_forward') { mag[id] = uni(r, 0.10, 0.20); act.rdPct = plan.rdPct * (1 + mag[id]); }
+    }
+
+    // flows (cash filled afterwards)
+    opening = { endARR: startARR, dr: Math.round(startARR * drivers[0].prepaid * 0.5), endCash: 0 };
+    quarters = [];
+    prev = opening;
+    for (let q = 0; q < 7; q++) { const Q = buildFlows(prev, drivers[q]); quarters.push(Q); prev = Q; }
+    budget = buildFlows(prev, plan);
+    smOv = smUplift != null ? Math.round(budget.sm * (1 + smUplift)) : null;
+    if (billingDrop != null) {
+      const pre = buildFlows(prev, act, smOv); // ARR flows do not depend on prepaid share
+      act.prepaid = plan.prepaid - billingDrop * billingCohortWeight(pre);
+    }
+    actual = buildFlows(prev, act, smOv);
+    quarters.push(actual);
+
+    // cash: budget runway = targetRunway months (see CLAUDE.md)
+    budgetBurn = Math.max(0, -budget.fcf) / 3;
+    refBurn = budgetBurn > 0 ? budgetBurn : budget.totalOpex * 0.1 / 3;
+    targetEnd = budgetBurn > 0 ? targetRunway * refBurn : Math.max(targetRunway * refBurn, budget.revenue);
+    cumBefore7 = quarters.slice(0, 7).reduce((s, x) => s + x.fcf, 0);
+    openCash = Math.round(targetEnd - budget.fcf - cumBefore7);
+    const ends = [openCash];
+    let c = openCash;
+    for (let q = 0; q < 7; q++) { c += quarters[q].fcf; ends.push(c); }
+    ends.push(c + budget.fcf, c + actual.fcf);
+    floor = 3 * refBurn;
+    minEnd = Math.min(...ends);
+    if (budgetBurn === 0 || minEnd >= floor || attempt === 49) {
+      if (minEnd < floor) openCash += Math.ceil(floor - minEnd); // last resort, never reached in tests
+      opening.endCash = openCash;
+      break;
+    }
   }
-
-  // flows (cash filled afterwards)
-  const opening = { endARR: startARR, dr: Math.round(startARR * drivers[0].prepaid * 0.5), endCash: 0 };
-  const quarters = [];
-  let prev = opening;
-  for (let q = 0; q < 7; q++) { const Q = buildFlows(prev, drivers[q]); quarters.push(Q); prev = Q; }
-  const budget = buildFlows(prev, plan);
-  const actual = buildFlows(prev, act, smUplift != null ? Math.round(budget.sm * (1 + smUplift)) : null);
-  quarters.push(actual);
-
-  // cash: budget runway = targetRunway months (see CLAUDE.md)
-  const budgetBurn = Math.max(0, -budget.fcf) / 3;
-  const refBurn = budgetBurn > 0 ? budgetBurn : budget.totalOpex * 0.1 / 3;
-  const targetEnd = Math.max(targetRunway * refBurn, budget.revenue);
-  const cumBefore7 = quarters.slice(0, 7).reduce((s, x) => s + x.fcf, 0);
-  let openCash = Math.round(targetEnd - budget.fcf - cumBefore7);
-  const ends = [openCash];
-  let c = openCash;
-  for (let q = 0; q < 7; q++) { c += quarters[q].fcf; ends.push(c); }
-  ends.push(c + budget.fcf, c + actual.fcf);
-  const floor = 3 * refBurn;
-  const minEnd = Math.min(...ends);
-  if (minEnd < floor) openCash += Math.ceil(floor - minEnd);
-  opening.endCash = openCash;
 
   let cash = openCash;
   for (let q = 0; q < 8; q++) {
@@ -322,7 +346,7 @@ export function diagnose(id, ds) {
       const nv = (A.newARR - B.newARR) / B.newARR;
       const sv = (A.sm - B.sm) / B.sm;
       return `New ARR landed at ${fmtUSD(A.newARR)} vs ${fmtUSD(B.newARR)} plan (${fmtSignedPct(nv)}) while S&M ran ${fmtUSD(A.sm)} vs ${fmtUSD(B.sm)} (${fmtSignedPct(sv)}). `
-        + `CAC payback stretched to ${A.cacPayback.toFixed(1)} months vs ${B.cacPayback.toFixed(1)} planned: paid acquisition is buying less pipeline per dollar.`;
+        + `CAC payback stretched to ${A.cacPayback.toFixed(1)} months vs ${B.cacPayback.toFixed(1)} planned (${A.cacPayback - B.cacPayback >= 0 ? '+' : '−'}${Math.abs(A.cacPayback - B.cacPayback).toFixed(1)} months): paid acquisition is buying less pipeline per dollar.`;
     }
     case 'billing_shift': {
       const bv = (A.billings - B.billings) / Math.abs(B.billings);
@@ -373,6 +397,7 @@ export function validate(ds) {
     eqI(Q.grossProfit, Q.revenue - Q.hosting - Q.support, `${name} gross profit`);
     eqI(Q.totalOpex, Q.sm + Q.rd + Q.ga, `${name} total opex`);
     eqI(Q.opIncome, Q.grossProfit - Q.totalOpex, `${name} operating income`);
+    if (!Q.smOverride) eqI(Q.sm, Math.round(Q.revenue * Q.drivers.smPct), `${name} S&M = % of revenue`);
     eqI(Q.dr, Math.round(Q.endARR * Q.drivers.prepaid * 0.5), `${name} deferred revenue`);
     eqI(Q.dDR, Q.dr - prev.dr, `${name} dDR`);
     eqI(Q.billings, Q.revenue + Q.dDR, `${name} billings`);

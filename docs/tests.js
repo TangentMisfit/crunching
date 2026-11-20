@@ -100,11 +100,15 @@ export function runTests() {
         }
         if (a.id === 'paid_search_inflation') {
           const r = 1 - D.newRate / P.newRate; assert(r >= 0.15 - 1e-12 && r <= 0.30 + 1e-12, `${m} ${r}`);
-          assert(A.sm >= B.sm, `${m} S&M below plan`);
+          const sv = (A.sm - B.sm) / B.sm, tol = 0.5 / B.sm;
+          assert(sv >= 0.05 - tol && sv <= 0.15 + tol, `${m} S&M var ${sv}`);
           assert(A.cacPayback > B.cacPayback, `${m} payback did not degrade`);
         }
         if (a.id === 'billing_shift') {
-          const drop = P.prepaid - D.prepaid; assert(drop > 0 && drop <= 0.25 + 1e-12 && D.prepaid >= 0.05 - 1e-12, `${m} drop ${drop}`);
+          const cap = P.prepaid - 0.05;
+          assert((a.magnitude >= 0.10 - 1e-12 || Math.abs(a.magnitude - cap) < 1e-12) && a.magnitude <= 0.25 + 1e-12, `${m} cohort drop ${a.magnitude}`);
+          const w = (0.25 * A.begARR + A.newARR + A.expARR) / A.endARR;
+          assert(Math.abs(D.prepaid - (P.prepaid - a.magnitude * Math.min(1, w))) < 1e-12, `${m} prepaid share ${D.prepaid}`);
           assert(A.dDR < B.dDR && A.fcf < B.fcf, `${m} dDR/FCF not down`);
           if (ds.anomalies.length === 1) assert(revVar < 0.02, `${m} revenue not near plan`);
         }
@@ -121,7 +125,7 @@ export function runTests() {
   });
   test('Anomalies: diagnostic text contains the correct computed numbers', () => {
     const U = E.fmtUSD, P = E.fmtPct;
-    const sp = (d) => `${d >= 0 ? '+' : '−'}${Math.abs(d * 100).toFixed(1)}%`;
+    const sp = (d) => { const v = Math.abs(d * 100).toFixed(1); return v === '0.0' ? '0.0%' : `${d >= 0 ? '+' : '−'}${v}%`; };
     let checked = 0;
     for (const ds of all) {
       const A = ds.quarters[7], B = ds.budget;
@@ -136,7 +140,9 @@ export function runTests() {
         }
         if (a.id === 'paid_search_inflation') {
           const pay = (Q) => (Q.sm / ((Q.newARR + Q.expARR) * Q.grossProfit / Q.revenue) * 12).toFixed(1);
-          need.push(`${U(A.newARR)} vs ${U(B.newARR)}`, sp((A.newARR - B.newARR) / B.newARR), `${U(A.sm)} vs ${U(B.sm)}`, `${pay(A)} months vs ${pay(B)}`);
+          const pd = (A.sm / ((A.newARR + A.expARR) * A.grossProfit / A.revenue) - B.sm / ((B.newARR + B.expARR) * B.grossProfit / B.revenue)) * 12;
+          need.push(`${U(A.newARR)} vs ${U(B.newARR)}`, sp((A.newARR - B.newARR) / B.newARR), `${U(A.sm)} vs ${U(B.sm)}`, sp((A.sm - B.sm) / B.sm),
+            `${pay(A)} months vs ${pay(B)}`, `(${pd >= 0 ? '+' : '−'}${Math.abs(pd).toFixed(1)} months)`);
         }
         if (a.id === 'billing_shift') {
           need.push(`${U(A.revenue + A.dDR)} vs ${U(B.revenue + B.dDR)}`, `${U(B.dr - A.dr)} below plan`, within);
@@ -166,10 +172,10 @@ export function runTests() {
     }
     return `observed ${(lo * 100).toFixed(1)}%–${(hi * 100).toFixed(1)}%`;
   });
-  test('Range: NDR 80–140% (B2B), 50–140% (B2C, see CLAUDE.md)', () => {
+  test('Range: NDR 80–140% (both archetypes)', () => {
     const obs = { B2B: [9, 0], B2C: [9, 0] };
     for (const ds of all) for (const Q of [...ds.quarters.slice(3), ds.budget]) {
-      const lo = ds.archetype === 'B2B' ? 0.80 : 0.50;
+      const lo = 0.80;
       obs[ds.archetype][0] = Math.min(obs[ds.archetype][0], Q.ndr); obs[ds.archetype][1] = Math.max(obs[ds.archetype][1], Q.ndr);
       assert(Q.ndr >= lo && Q.ndr <= 1.40, `seed ${ds.seed} ${ds.archetype} NDR ${Q.ndr}`);
     }
@@ -185,17 +191,49 @@ export function runTests() {
       }
     }
   });
-  test('Range: budget runway 15–36 months when meaningfully burning', () => {
-    let n = 0;
-    for (const ds of all) {
-      const B = ds.budget;
-      if (B.monthlyBurn > 0 && B.monthlyBurn * ds.targetRunway >= B.revenue) {
-        n++;
-        assert(B.runway >= 15 - 0.05 && B.runway <= 36.05, `seed ${ds.seed} runway ${B.runway}`);
+  test('Realism: starting runway 15–36 months (current-quarter budget, every burning dataset)', () => {
+    const out = [];
+    for (const arch of ['B2B', 'B2C']) {
+      let lo = Infinity, hi = -Infinity, n = 0;
+      for (const ds of corpus[arch]) {
+        const B = ds.budget;
+        if (!(B.monthlyBurn > 0)) continue;
+        n++; lo = Math.min(lo, B.runway); hi = Math.max(hi, B.runway);
+        assert(B.runway >= 15 - 0.05 && B.runway <= 36.05, `${arch} seed ${ds.seed} runway ${B.runway}`);
+        for (const Q of [...ds.quarters, B]) assert(Q.endCash >= 3 * B.monthlyBurn - 1, `${arch} seed ${ds.seed} cash below 3 months of burn`);
       }
+      out.push(`${arch} ${lo.toFixed(1)} to ${hi.toFixed(1)} mo (n=${n})`);
     }
-    return `${n} datasets checked`;
+    return out.join('; ');
   });
+
+  // ---------------------------------------------------------------- realism (current quarter, actual AND budget)
+  const REAL = {
+    smPct: { label: 'S&M % of revenue', B2B: [0.25, 0.65], B2C: [0.20, 0.60], get: (Q) => Q.smPct, fmt: (v) => `${(v * 100).toFixed(1)}%` },
+    cac: { label: 'CAC payback (months)', B2B: [4, 48], B2C: [4, 48], get: (Q) => Q.sm / ((Q.newARR + Q.expARR) * Q.grossProfit / Q.revenue) * 12, fmt: (v) => v.toFixed(1) },
+    fcfm: { label: 'FCF margin', B2B: [-0.70, 0.25], B2C: [-0.70, 0.25], get: (Q) => Q.fcf / Q.revenue, fmt: (v) => `${(v * 100).toFixed(1)}%` },
+    r40: { label: 'Rule of 40', B2B: [-50, 80], B2C: [-50, 80], get: (Q) => Q.ruleOf40, fmt: (v) => v.toFixed(1) },
+    bm: { label: 'Burn multiple (net burn / net new ARR)', B2B: [0, 5], B2C: [0, 5],
+      get: (Q) => (Q.fcf < 0 && Q.endARR - Q.begARR > 0 ? -Q.fcf / (Q.endARR - Q.begARR) : null), fmt: (v) => `${v.toFixed(2)}x` },
+    burnArr: { label: 'Monthly burn / ending ARR', B2B: [0, 0.20], B2C: [0, 0.20], get: (Q) => Math.max(0, -Q.fcf) / 3 / Q.endARR, fmt: (v) => `${(v * 100).toFixed(1)}%` },
+  };
+  for (const [key, R] of Object.entries(REAL)) {
+    test(`Realism: ${R.label} within B2B ${R.B2B.join('…')}, B2C ${R.B2C.join('…')}`, () => {
+      const out = [];
+      for (const arch of ['B2B', 'B2C']) {
+        let lo = Infinity, hi = -Infinity, n = 0;
+        const [a, b] = R[arch];
+        for (const ds of corpus[arch]) for (const [who, Q] of [['actual', ds.quarters[7]], ['budget', ds.budget]]) {
+          const v = R.get(Q);
+          if (v == null) continue;
+          n++; lo = Math.min(lo, v); hi = Math.max(hi, v);
+          assert(v >= a - 1e-9 && v <= b + 1e-9, `${arch} seed ${ds.seed} ${who} (${ds.anomalies.map((x) => x.id).join('+')}): ${R.fmt(v)}`);
+        }
+        out.push(`${arch} ${R.fmt(lo)} to ${R.fmt(hi)} (n=${n})`);
+      }
+      return out.join('; ');
+    });
+  }
 
   // ---------------------------------------------------------------- formatting
   test('Formatting: $, %, bps, months', () => {

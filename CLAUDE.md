@@ -6,7 +6,7 @@ on Windows.
 
 **Rule: any future change to a decision below must update this file in the same change.**
 This app is separate from `C:\mental_math_app`. Never touch that folder.
-The repo lives at `C:\crunching_skills` (the original brief said `C:\crunching`, which did not exist).
+Local folder: `C:\crunching_skills`. GitHub repo name: `crunching` (Pages URL path `/crunching/`).
 
 ---------------------------------------------------------------------------------------------------
 ## 1. Architecture
@@ -61,17 +61,30 @@ The repo lives at `C:\crunching_skills` (the original brief said `C:\crunching`,
 | Param | B2B | B2C |
 |---|---|---|
 | Starting ARR | $10M–$80M | $8M–$60M |
-| New ARR / beg ARR per qtr | 5%–12% | 6%–14% |
+| New ARR / beg ARR per qtr | 4%–9% | 6%–11% * |
 | Expansion / beg ARR per qtr | 2%–5% | 0.5%–2% |
-| Churn / beg ARR per qtr | 1%–3% | 4%–8% |
+| Churn / beg ARR per qtr | 1%–3% | 2%–3.5% * |
 | Hosting % revenue | 10%–16% | 12%–20% |
 | Support % revenue | 5%–9% | 3%–6% |
-| R&D % revenue | 25%–40% | 20%–32% |
-| G&A % revenue | 12%–20% | 10%–16% |
-| Annual-prepaid share of ARR | 50%–80% | 20%–50% |
-| CAC payback target (months) | 14–24 | 8–16 |
+| S&M % revenue | 35%–50% * | 32%–46% * |
+| R&D % revenue | 28%–40% * | 25%–32% * |
+| G&A % revenue | 14%–20% * | 12%–16% * |
+| Annual-prepaid share of ARR | 45%–70% * | 20%–40% * |
 
-- Drivers drift per quarter: `driver_q = base × (1 + U(-10%, +10%))` (relative to the base, not compounding).
+\* Tuned in v1.1 so the realism tests (section 11) pass on seeds 1–500 per archetype. Requested v1.1 inputs were
+S&M 30–55% / 25–50%, new ARR 4–9% / 5–11%; v1.0 values were R&D 25–40% / 20–32%, G&A 12–20% / 10–16%, prepaid
+50–80% / 20–50%, B2C churn 4–8%. Why:
+- FCF margin > 25% and Rule of 40 > 80 came from low-opex + high-GM + high-growth/high-prepaid draws → raised the
+  opex floors (S&M, R&D, G&A) and lowered the prepaid ceilings.
+- S&M % > 65% (B2B) / 60% (B2C) when paid_search_inflation adds up to 15% on top of the max S&M draw (+10% drift)
+  → lowered the S&M ceilings.
+- B2C burn multiple exploded (up to ~400x) because with churn 4–8% vs new 5–11% net new ARR was often ≈ 0
+  → B2C churn 2–3.5% and new 6–11% (net new ARR is now clearly positive; B2C NDR is 85–100%).
+- CACPaybackTarget removed as an input (v1.1): CAC payback is an output only.
+
+- Drivers drift per quarter: `driver_q = base × (1 + U(-d, +d))`, relative to the base (not compounding);
+  d = 10% for every driver except the **prepaid share, d = 3%** (v1.1 decision: a ±10% swing re-bills the whole ARR
+  base, which faked cash spikes of up to ~8% of revenue in one quarter).
 - 8 quarters, index 0–7. Q7 = current, Q3 = prior-year comparison (PY). Labels like `Q3 FY25`; current quarter is
   Q1–Q4 of FY25 or FY26 (random), earlier quarters count back.
 - Opening balances (before Q0): BegARR = starting ARR, DR = round(startARR × prepaid₀ × 0.5), cash = see below.
@@ -79,24 +92,28 @@ The repo lives at `C:\crunching_skills` (the original brief said `C:\crunching`,
 ### Per quarter
 - BegARR(q) = EndARR(q-1). EndARR = Beg + New + Exp − Churn.
 - Revenue = round((Beg + End)/8). Gross Profit = Revenue − Hosting − Support. GM% = GP / Revenue.
-- S&M = round((New + Exp) × GM% × CACPaybackTarget / 12). R&D, G&A = round(% × Revenue).
+- S&M, R&D, G&A = round(driver % × Revenue). (v1.1: S&M is a % of revenue driver, no longer derived from payback.)
 - Total Opex = S&M + R&D + G&A. Operating Income = GP − Total Opex.
 - DR(end) as above; dDR = DR(q) − DR(q-1). Billings = Revenue + dDR. FCF = Operating Income + dDR (no capex / other WC).
 - Ending Cash = Beginning Cash + FCF; Beginning Cash(q) = Ending Cash(q-1).
 - Monthly Burn = max(0, −FCF)/3. Runway = Ending Cash / Monthly Burn, or `CF+` (null) if not burning.
 - NDR (TTM), q ≥ 3 only: (BegARR(q-3) + ΣExp(q-3..q) − ΣChurn(q-3..q)) / BegARR(q-3). **Simplified NDR**: it uses
   company-level expansion/churn flows, not a true cohort.
-- CAC Payback (months) = S&M / ((New + Exp) × GM%) × 12.
+- CAC Payback (months, OUTPUT) = S&M / ((New + Exp) × GM%) × 12.
 - ARR YoY = EndARR(q)/EndARR(q-4) − 1 (q ≥ 4). FCF margin = FCF / Revenue. Rule of 40 = (YoY + FCF margin) × 100.
 - % rows: hosting, support, S&M, R&D, G&A, opex, op margin = line / revenue.
 
 ### Starting cash (decision — spec said "starting runway 15–36 months")
 - Cash flows are computed first. Target: the **current-quarter budget** runway = U(15, 36) months, i.e.
-  budget Ending Cash = target × reference burn, where reference burn = budget monthly burn, or (if the budget is not
-  burning) budget Total Opex × 10% / 3. Floor: that ending cash ≥ one quarter of budget revenue.
-- Opening cash is backed out from that. If any ending cash (Q0–Q6, budget, actual) or opening cash would be below
-  3 × reference burn, the whole cash series is shifted up so the minimum equals that. Opening cash is rounded to integer $k.
-- Result: runway > 0 whenever burning, everywhere.
+  budget Ending Cash = target × budget monthly burn. If the budget is not burning: reference burn = budget Total Opex
+  × 10% / 3 and ending cash ≥ one quarter of budget revenue (runway shows CF+ anyway).
+- Opening cash is backed out from that and rounded to integer $k. Every ending cash (Q0–Q6, budget, actual) and the
+  opening cash must be ≥ 3 × reference burn.
+- **Deterministic rejection loop (v1.1):** if a burning company's history would breach that floor (e.g. it was
+  cash-generative earlier and burns now), the base drivers, drift, noise and anomalies are redrawn from the same PRNG
+  stream (max 50 attempts; the last-resort upward cash shift is never reached in tests). Same seed → same dataset.
+  Side effect: slightly fewer burning companies than independent draws would give.
+- Result: budget runway 15–36 months for every burning dataset; runway > 0 whenever burning, everywhere.
 
 ### Budget vs actual (current quarter only)
 - Budget: same opening balances as actual (BegARR = EndARR(Q6), cash = EndCash(Q6), prior DR = DR(Q6)), plan drivers
@@ -108,13 +125,18 @@ The repo lives at `C:\crunching_skills` (the original brief said `C:\crunching`,
 | id | Driver change | Highlighted lines | Primary line (Q a answer) |
 |---|---|---|---|
 | hosting_outgrowth | hosting % = plan × (1 + U(15%,35%)) | hosting, grossProfit, gmPct | hosting |
-| paid_search_inflation | new-ARR rate = plan × (1 − U(15%,30%)); S&M = budget S&M × (1 + U(0%,5%)) | sm, endARR | endARR |
-| billing_shift | prepaid share = plan − U(10,25) pts, capped so it stays ≥ 5% | monthlyBurn, endCash, runway | monthlyBurn |
+| paid_search_inflation | new-ARR rate = plan × (1 − U(15%,30%)); S&M = round(budget S&M × (1 + U(5%,15%))) | sm, endARR | endARR |
+| billing_shift | prepaid share of the cohort billed this quarter drops U(10,25) pts (capped so it stays ≥ 5%); total prepaid share = plan − drop × w, w = min(1, (0.25 × BegARR + New + Exp) / EndARR) | monthlyBurn, endCash, runway | monthlyBurn |
 | churn_spike | churn rate = plan × (1 + U(50%,100%)) | ndr, endARR | ndr |
 | hiring_pull_forward | R&D % = plan × (1 + U(10%,20%)) | rd, totalOpex, opIncome | rd |
 
-- hiring_pull_forward also forces the noise on G&A %, payback, new-ARR and expansion rates to be ≥ plan (decision:
-  otherwise ~1.5% of cases had opex or operating income beat plan, contradicting "hits opex and burn").
+- billing_shift (v1.1 decision): billing terms change only on contracts billed this quarter (annual renewals ≈ 25% of
+  beginning ARR, plus new and expansion). Applying the drop to the whole ARR base took 20–50% of revenue out of FCF in
+  one quarter and broke the FCF, Rule of 40 and burn-multiple realism bounds whatever the driver ranges.
+- paid_search_inflation diagnostic cites new ARR vs plan, S&M vs plan (both with %), and CAC payback actual vs budget
+  with the change in months.
+- hiring_pull_forward also forces the noise on G&A % and S&M % to be ≥ plan (decision: otherwise opex or operating
+  income could beat plan, contradicting "hits opex and burn").
 - Two anomalies never share a highlighted line (so paid_search_inflation + churn_spike never pair).
 - When two are injected they are ordered by $k severity (desc); `anomalies[0]` is "the biggest miss":
   hosting var; R&D var; New ARR shortfall; churn overage; dDR shortfall.
@@ -210,11 +232,25 @@ The app validates every generated dataset; on failure it regenerates with seed+1
   header), Reset (two-tap confirm, removes only `crunch_` keys), app version and CACHE_VERSION.
 
 ## 11. Tests (tests.js)
-Determinism; 500 seeds per archetype pass `validate()`; every anomaly appears and its diagnostic contains the correct
-recomputed numbers; anomaly magnitudes in range; ranges (GM 55–90%; NDR 80–140% for B2B, **50–140% for B2C**
-(decision: the B2C churn range 4–8%/qtr, plus churn_spike, mathematically drives TTM NDR as low as ~58%); runway > 0
-when burning); every M1/M2 builder answer matches an independent recomputation; scoring, unit conversion, gates,
-formatting; validate() catches a corrupted dataset.
+Determinism; 500 seeds per archetype pass `validate()` (now also S&M = round(S&M% × revenue) except the
+paid-search override); every anomaly appears and its diagnostic contains the correct recomputed numbers; anomaly
+magnitudes in range (paid search S&M +5–15%, billing cohort drop 10–25 pts); ranges (GM 55–90%; NDR 80–140% for both
+archetypes — the v1.0 B2C 50% exception was removed in v1.1; runway > 0 when burning); every M1/M2 builder answer
+matches an independent recomputation; scoring, unit conversion, gates, formatting; validate() catches a corrupted dataset.
+
+**Realism tests (v1.1)** — seeds 1–500 per archetype, current quarter, actual AND budget. If one fails, adjust the
+driver ranges, never the bounds:
+| Metric | B2B | B2C |
+|---|---|---|
+| S&M % of revenue | 25%–65% | 20%–60% |
+| CAC payback (months) | 4–48 | 4–48 |
+| FCF margin | −70% to +25% | −70% to +25% |
+| Rule of 40 | −50 to +80 | −50 to +80 |
+| Burn multiple = net burn / net new ARR (only when burning and net new ARR > 0) | 0–5 | 0–5 |
+| Monthly burn / ending ARR | ≤ 20% | ≤ 20% |
+| Starting runway (budget, every burning dataset) | 15–36 mo | 15–36 mo |
+Known limit: burn multiple has a singularity as net new ARR → 0 (e.g. a churn spike cancelling new ARR). On seeds
+501–5000 it exceeded 5 in 1 of 4,500 datasets per archetype; every other realism bound held.
 
 ## 12. Done criteria
 tests.html all PASS; local run works (both cards, full M1 + M2 sessions, logs persist, CSV export); SW caches the
