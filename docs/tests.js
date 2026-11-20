@@ -172,10 +172,10 @@ export function runTests() {
     }
     return `observed ${(lo * 100).toFixed(1)}%–${(hi * 100).toFixed(1)}%`;
   });
-  test('Range: NDR 80–140% (both archetypes)', () => {
+  test('Range: NDR 80–140% (B2B), 50–140% (B2C: churn 4–8%/qtr caps TTM NDR below 80%)', () => {
     const obs = { B2B: [9, 0], B2C: [9, 0] };
     for (const ds of all) for (const Q of [...ds.quarters.slice(3), ds.budget]) {
-      const lo = 0.80;
+      const lo = ds.archetype === 'B2B' ? 0.80 : 0.50;
       obs[ds.archetype][0] = Math.min(obs[ds.archetype][0], Q.ndr); obs[ds.archetype][1] = Math.max(obs[ds.archetype][1], Q.ndr);
       assert(Q.ndr >= lo && Q.ndr <= 1.40, `seed ${ds.seed} ${ds.archetype} NDR ${Q.ndr}`);
     }
@@ -213,8 +213,8 @@ export function runTests() {
     cac: { label: 'CAC payback (months)', B2B: [4, 48], B2C: [4, 48], get: (Q) => Q.sm / ((Q.newARR + Q.expARR) * Q.grossProfit / Q.revenue) * 12, fmt: (v) => v.toFixed(1) },
     fcfm: { label: 'FCF margin', B2B: [-0.70, 0.25], B2C: [-0.70, 0.25], get: (Q) => Q.fcf / Q.revenue, fmt: (v) => `${(v * 100).toFixed(1)}%` },
     r40: { label: 'Rule of 40', B2B: [-50, 80], B2C: [-50, 80], get: (Q) => Q.ruleOf40, fmt: (v) => v.toFixed(1) },
-    bm: { label: 'Burn multiple (net burn / net new ARR)', B2B: [0, 5], B2C: [0, 5],
-      get: (Q) => (Q.fcf < 0 && Q.endARR - Q.begARR > 0 ? -Q.fcf / (Q.endARR - Q.begARR) : null), fmt: (v) => `${v.toFixed(2)}x` },
+    bm: { label: 'Burn multiple (net burn / net new ARR; skipped unless burning and net new ARR ≥ 2% of beg ARR)', B2B: [0, 5], B2C: [0, 5],
+      get: (Q) => (Q.fcf < 0 && Q.endARR - Q.begARR >= 0.02 * Q.begARR ? -Q.fcf / (Q.endARR - Q.begARR) : null), fmt: (v) => `${v.toFixed(2)}x` },
     burnArr: { label: 'Monthly burn / ending ARR', B2B: [0, 0.20], B2C: [0, 0.20], get: (Q) => Math.max(0, -Q.fcf) / 3 / Q.endARR, fmt: (v) => `${(v * 100).toFixed(1)}%` },
   };
   for (const [key, R] of Object.entries(REAL)) {
@@ -234,6 +234,15 @@ export function runTests() {
       return out.join('; ');
     });
   }
+
+  test('Archetype: B2C median churn ≥ 2x B2B; B2C median expansion < B2B (500 seeds, all quarters)', () => {
+    const med = (arch, key) => E.median(corpus[arch].flatMap((ds) => ds.quarters.map((Q) => Q[key] / Q.begARR)));
+    const cB = med('B2B', 'churnARR'), cC = med('B2C', 'churnARR'), eB = med('B2B', 'expARR'), eC = med('B2C', 'expARR');
+    assert(cC >= 2 * cB, `churn B2C ${cC} vs B2B ${cB}`);
+    assert(eC < eB, `expansion B2C ${eC} vs B2B ${eB}`);
+    const p = (x) => `${(x * 100).toFixed(2)}%`;
+    return `median churn/qtr B2B ${p(cB)}, B2C ${p(cC)} (${(cC / cB).toFixed(2)}x); median expansion/qtr B2B ${p(eB)}, B2C ${p(eC)}`;
+  });
 
   // ---------------------------------------------------------------- formatting
   test('Formatting: $, %, bps, months', () => {

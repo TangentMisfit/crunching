@@ -1,7 +1,7 @@
 // Crunching engine: pure functions, no DOM.
 // Currency = integer $k. Percentages = decimals. See CLAUDE.md section 3.
 
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.1.1';
 
 // ---------------------------------------------------------------- PRNG
 export function mulberry32(seed) {
@@ -69,8 +69,8 @@ export const ARCHETYPES = {
   B2B: { startARR: [10000, 80000], newRate: [0.04, 0.09], expRate: [0.02, 0.05], churnRate: [0.01, 0.03],
     hostPct: [0.10, 0.16], supPct: [0.05, 0.09], rdPct: [0.28, 0.40], gaPct: [0.14, 0.20],
     prepaid: [0.45, 0.70], smPct: [0.35, 0.50] },
-  B2C: { startARR: [8000, 60000], newRate: [0.06, 0.11], expRate: [0.005, 0.02], churnRate: [0.02, 0.035],
-    hostPct: [0.12, 0.20], supPct: [0.03, 0.06], rdPct: [0.25, 0.32], gaPct: [0.12, 0.16],
+  B2C: { startARR: [8000, 60000], newRate: [0.09, 0.15], expRate: [0.005, 0.02], churnRate: [0.04, 0.08],
+    hostPct: [0.12, 0.20], supPct: [0.03, 0.06], rdPct: [0.25, 0.32], gaPct: [0.13, 0.16],
     prepaid: [0.20, 0.40], smPct: [0.32, 0.46] },
 };
 // Relative quarterly drift. Prepaid share drifts less: a swing re-bills the whole ARR base and creates fake cash spikes.

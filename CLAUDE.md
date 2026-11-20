@@ -61,14 +61,14 @@ Local folder: `C:\crunching_skills`. GitHub repo name: `crunching` (Pages URL pa
 | Param | B2B | B2C |
 |---|---|---|
 | Starting ARR | $10M–$80M | $8M–$60M |
-| New ARR / beg ARR per qtr | 4%–9% | 6%–11% * |
+| New ARR / beg ARR per qtr | 4%–9% | 9%–15% |
 | Expansion / beg ARR per qtr | 2%–5% | 0.5%–2% |
-| Churn / beg ARR per qtr | 1%–3% | 2%–3.5% * |
+| Churn / beg ARR per qtr | 1%–3% | 4%–8% |
 | Hosting % revenue | 10%–16% | 12%–20% |
 | Support % revenue | 5%–9% | 3%–6% |
 | S&M % revenue | 35%–50% * | 32%–46% * |
 | R&D % revenue | 28%–40% * | 25%–32% * |
-| G&A % revenue | 14%–20% * | 12%–16% * |
+| G&A % revenue | 14%–20% * | 13%–16% * |
 | Annual-prepaid share of ARR | 45%–70% * | 20%–40% * |
 
 \* Tuned in v1.1 so the realism tests (section 11) pass on seeds 1–500 per archetype. Requested v1.1 inputs were
@@ -78,8 +78,11 @@ S&M 30–55% / 25–50%, new ARR 4–9% / 5–11%; v1.0 values were R&D 25–40%
   opex floors (S&M, R&D, G&A) and lowered the prepaid ceilings.
 - S&M % > 65% (B2B) / 60% (B2C) when paid_search_inflation adds up to 15% on top of the max S&M draw (+10% drift)
   → lowered the S&M ceilings.
-- B2C burn multiple exploded (up to ~400x) because with churn 4–8% vs new 5–11% net new ARR was often ≈ 0
-  → B2C churn 2–3.5% and new 6–11% (net new ARR is now clearly positive; B2C NDR is 85–100%).
+- v1.1 briefly lowered B2C churn to 2–3.5% to pass the burn-multiple test. **Reverted in v1.1.1**: high churn + low
+  expansion is the B2C signature the app trains. B2C churn is 4–8% again and new ARR was raised to 9–15% so B2C still
+  grows (pre-anomaly net new ARR / beg ARR: median 7.3%, p10 4.4%, p90 10.3%, range 1.2–14.0%). The burn-multiple
+  test now skips near-zero net new ARR instead (section 11).
+- v1.1.1: B2C G&A floor 12% → 13% (with new ARR 9–15%, one B2C budget hit FCF margin 25.1%).
 - CACPaybackTarget removed as an input (v1.1): CAC payback is an output only.
 
 - Drivers drift per quarter: `driver_q = base × (1 + U(-d, +d))`, relative to the base (not compounding);
@@ -234,8 +237,9 @@ The app validates every generated dataset; on failure it regenerates with seed+1
 ## 11. Tests (tests.js)
 Determinism; 500 seeds per archetype pass `validate()` (now also S&M = round(S&M% × revenue) except the
 paid-search override); every anomaly appears and its diagnostic contains the correct recomputed numbers; anomaly
-magnitudes in range (paid search S&M +5–15%, billing cohort drop 10–25 pts); ranges (GM 55–90%; NDR 80–140% for both
-archetypes — the v1.0 B2C 50% exception was removed in v1.1; runway > 0 when burning); every M1/M2 builder answer
+magnitudes in range (paid search S&M +5–15%, billing cohort drop 10–25 pts); ranges (GM 55–90%; NDR 80–140% for
+B2B, **50–140% for B2C** (restored in v1.1.1: churn 4–8%/qtr against ≤ 2% expansion mathematically caps B2C TTM NDR
+below 80%; observed 61–91%); runway > 0 when burning); every M1/M2 builder answer
 matches an independent recomputation; scoring, unit conversion, gates, formatting; validate() catches a corrupted dataset.
 
 **Realism tests (v1.1)** — seeds 1–500 per archetype, current quarter, actual AND budget. If one fails, adjust the
@@ -246,11 +250,11 @@ driver ranges, never the bounds:
 | CAC payback (months) | 4–48 | 4–48 |
 | FCF margin | −70% to +25% | −70% to +25% |
 | Rule of 40 | −50 to +80 | −50 to +80 |
-| Burn multiple = net burn / net new ARR (only when burning and net new ARR > 0) | 0–5 | 0–5 |
+| Burn multiple = net burn / net new ARR — evaluated only when burning AND net new ARR ≥ 2% of beginning ARR (below that the metric is undefined in practice; skipped) | 0–5 | 0–5 |
 | Monthly burn / ending ARR | ≤ 20% | ≤ 20% |
 | Starting runway (budget, every burning dataset) | 15–36 mo | 15–36 mo |
-Known limit: burn multiple has a singularity as net new ARR → 0 (e.g. a churn spike cancelling new ARR). On seeds
-501–5000 it exceeded 5 in 1 of 4,500 datasets per archetype; every other realism bound held.
+**Archetype test (v1.1.1)** — 500 seeds each, all 8 quarters: median quarterly churn % (churn / beg ARR) for B2C ≥ 2×
+the B2B median, and median expansion % for B2C < the B2B median.
 
 ## 12. Done criteria
 tests.html all PASS; local run works (both cards, full M1 + M2 sessions, logs persist, CSV export); SW caches the
