@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crunching tests</title>
+<style>
+  body { margin: 0; padding: 16px; background: #0b0d10; color: #e8eaed; font: 14px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  #summary { font: 700 18px ui-monospace, "Roboto Mono", monospace; margin-bottom: 14px; }
+  .t { padding: 8px 10px; border-bottom: 1px solid #262c35; }
+  .t b { font-family: ui-monospace, "Roboto Mono", monospace; margin-right: 8px; }
+  .pass b { color: #3ddc84; } .fail b { color: #ff5c5c; }
+  .d { color: #8b929c; font-size: 12px; word-break: break-word; margin-top: 2px; }
+  .fail .d { color: #ffb84d; }
+</style>
+</head>
+<body>
+<h1>Crunching — engine tests</h1>
+<div id="summary">Running…</div>
+<div id="list"></div>
+<script type="module">
+  import { runTests } from './tests.js';
+  const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  setTimeout(() => {
+    const t0 = performance.now();
+    const { results, passed, failed, total } = runTests();
+    const ms = Math.round(performance.now() - t0);
+    const sum = document.getElementById('summary');
+    sum.textContent = `${failed ? 'FAIL' : 'ALL PASS'} — ${passed}/${total} passed, ${failed} failed (${ms} ms)`;
+    sum.style.color = failed ? '#ff5c5c' : '#3ddc84';
+    document.getElementById('list').innerHTML = results.map((r) =>
+      `<div class="t ${r.pass ? 'pass' : 'fail'}"><b>${r.pass ? 'PASS' : 'FAIL'}</b>${esc(r.name)}${r.detail ? `<div class="d">${esc(r.detail)}</div>` : ''}</div>`).join('');
+    document.title = `${failed ? 'FAIL' : 'PASS'} ${passed}/${total} — Crunching tests`;
+  }, 0);
+</script>
+</body>
+</html>
